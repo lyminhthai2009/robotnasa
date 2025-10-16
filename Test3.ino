@@ -102,7 +102,7 @@ void PID_Linefollow(float error) {
   float PID_value = (Kp * P) + (Ki * I) + (Kd * D);
 
   // --- Tốc độ động ---
-  float ratio = 1.0 - (min(abs(error), 1500) / 1500.0);
+  float ratio = 1.0f - (fmin(fabs(error), 1500.0f) / 1500.0f);
   int toc_do_hien_tai = TOC_DO_CO_BAN + (TOC_DO_MAX - TOC_DO_CO_BAN) * ratio;
 
   toc_do_trai = toc_do_hien_tai - PID_value;
