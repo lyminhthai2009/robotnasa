@@ -1,5 +1,4 @@
 #include <QTRSensors.h>
-#include <driver/ledc.h> // Thư viện cho API PWM mới
 
 // =================================================================
 // == CẤU HÌNH PHẦN CỨNG CỦA BẠN ==
@@ -8,9 +7,6 @@
 #define PWM_PIN_L_B 10
 #define PWM_PIN_R_A 6
 #define PWM_PIN_R_B 5
-
-// --- THAY ĐỔI: Không cần định nghĩa kênh (channel) nữa ---
-// Các kênh sẽ được quản lý tự động bởi các đối tượng LEDC
 
 // Cảm biến dò line
 #define SENSOR_1_PIN 4
@@ -36,26 +32,13 @@ float Ki = 0;
 float Kd = 1.0;
 // -----------------------------------------------------------
 
-float Pvalue;
-float Ivalue;
-float Dvalue;
-
-// Biến cho việc tính toán PID
-uint16_t position;
 int P, D, I = 0, previousError = 0, error;
-int lsp, rsp; // Tốc độ trái và phải
-int lfspeed = 180; // Tốc độ cơ sở
+int lsp, rsp;
+int lfspeed = 180;
 
 // Cấu hình PWM
 const int pwm_freq = 5000;
-const int pwm_resolution = 8; // Độ phân giải 8-bit (0-255)
-
-// --- THAY ĐỔI: Tạo các đối tượng LEDC cho mỗi chân PWM ---
-// Đây là cách làm mới, thay thế cho ledcSetup và ledcAttachPin
-ledc::LEDC motor_l_a(PWM_PIN_L_A);
-ledc::LEDC motor_l_b(PWM_PIN_L_B);
-ledc::LEDC motor_r_a(PWM_PIN_R_A);
-ledc::LEDC motor_r_b(PWM_PIN_R_B);
+const int pwm_resolution_bits = 8; // Độ phân giải 8-bit (0-255)
 
 // =================================================================
 // == HÀM SETUP - CHẠY MỘT LẦN KHI KHỞI ĐỘNG ==
@@ -64,17 +47,16 @@ void setup()
 {
   Serial.begin(115200);
   
-  // --- THAY ĐỔI: Cấu hình Motor PWM bằng API mới ---
-  // Gọi phương thức .setup() cho mỗi đối tượng motor
-  motor_l_a.setup(pwm_freq, pwm_resolution);
-  motor_l_b.setup(pwm_freq, pwm_resolution);
-  motor_r_a.setup(pwm_freq, pwm_resolution);
-  motor_r_b.setup(pwm_freq, pwm_resolution);
+  // --- THAY ĐỔI LỚN: Cấu hình PWM bằng analogWrite ---
+  // Không cần ledcSetup hay ledcAttachPin nữa!
+  // Chỉ cần cài đặt tần số và độ phân giải chung cho analogWrite
+  analogWriteFreq(pwm_freq);
+  analogWriteResolution(pwm_resolution_bits);
   
   // --- Cấu hình Đèn LED ---
   pinMode(W_LED_ON, OUTPUT);
   pinMode(IR_LED_ON, OUTPUT);
-  digitalWrite(IR_LED_ON, HIGH); // Bật đèn hồng ngoại cho cảm biến
+  digitalWrite(IR_LED_ON, HIGH);
 
   // --- Cấu hình Cảm biến QTR ---
   qtr.setTypeRC();
@@ -92,7 +74,6 @@ void setup()
   digitalWrite(W_LED_ON, LOW);
 
   Serial.println("Calibration da xong. Robot se bat dau chay.");
-  
   delay(1000);
 }
 
@@ -101,59 +82,51 @@ void setup()
 // =================================================================
 void loop()
 {
-  robot_control();
-}
-
-// =================================================================
-// == CÁC HÀM CHỨC NĂNG ==
-// =================================================================
-
-void robot_control(){
+  // Đọc cảm biến, tính toán lỗi
   position = qtr.readLineBlack(sensorValues);
   error = 1500 - position;
-  PID_Linefollow(error);
+  
+  // Tính toán PID
+  P = error;
+  I = I + error;
+  D = error - previousError;
+  previousError = error;
+  
+  float PIDvalue = (Kp * P) + (Ki * I) + (Kd * D);
+
+  // Tính toán tốc độ hai bánh
+  lsp = lfspeed - PIDvalue;
+  rsp = lfspeed + PIDvalue;
+
+  // Giới hạn tốc độ
+  lsp = constrain(lsp, -255, 255);
+  rsp = constrain(rsp, -255, 255);
+  
+  // Điều khiển động cơ
+  motor_drive(lsp, rsp);
 }
 
-void PID_Linefollow(int error){
-    P = error;
-    I = I + error;
-    D = error - previousError;
-    
-    Pvalue = Kp * P;
-    Ivalue = Ki * I;
-    Dvalue = Kd * D; 
-
-    float PIDvalue = Pvalue + Ivalue + Dvalue;
-    previousError = error;
-
-    lsp = lfspeed - PIDvalue;
-    rsp = lfspeed + PIDvalue;
-
-    lsp = constrain(lsp, -255, 255);
-    rsp = constrain(rsp, -255, 255);
-    
-    motor_drive(lsp, rsp);
-}
-
-// HÀM ĐIỀU KHIỂN ĐỘNG CƠ
+// =================================================================
+// == HÀM ĐIỀU KHIỂN ĐỘNG CƠ (Sử dụng analogWrite) ==
+// =================================================================
 void motor_drive(int left_speed, int right_speed){
   // Điều khiển motor trái
   if(left_speed > 0){ // Chạy tới
-    motor_l_a.write(left_speed); // THAY ĐỔI: Dùng object.write()
-    motor_l_b.write(0);
+    analogWrite(PWM_PIN_L_A, left_speed);
+    analogWrite(PWM_PIN_L_B, 0);
   }
   else { // Chạy lùi
-    motor_l_a.write(0);
-    motor_l_b.write(abs(left_speed));
+    analogWrite(PWM_PIN_L_A, 0);
+    analogWrite(PWM_PIN_L_B, abs(left_speed));
   }
   
   // Điều khiển motor phải
   if(right_speed > 0){ // Chạy tới
-    motor_r_a.write(right_speed); // THAY ĐỔI: Dùng object.write()
-    motor_r_b.write(0);
+    analogWrite(PWM_PIN_R_A, right_speed);
+    analogWrite(PWM_PIN_R_B, 0);
   }
   else { // Chạy lùi
-    motor_r_a.write(0);
-    motor_r_b.write(abs(right_speed));
+    analogWrite(PWM_PIN_R_A, 0);
+    analogWrite(PWM_PIN_R_B, abs(right_speed));
   }
 }
