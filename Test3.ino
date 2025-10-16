@@ -76,8 +76,18 @@ void loop() {
 
 // =====================================================
 void robot_control() {
+  qtr.read(sensorValues);
+
+  // Kiểm tra ngã tư (tất cả đều > 800)
+  if (sensorValues[0] > 800 && sensorValues[1] > 800 && sensorValues[2] > 800 && sensorValues[3] > 800) {
+    Serial.println("== NGA TU - RE PHAI ==");
+    re_phai_ngat_tu();
+    return;
+  }
+
+  // Nếu không phải ngã tư -> chạy dò line như bình thường
   uint16_t position = qtr.readLineBlack(sensorValues);
-  float error = 1500.0 - position;  // 1500 ~ tâm của 4 cảm biến
+  float error = 1500.0 - position;
   PID_Linefollow(error);
 }
 
@@ -136,4 +146,10 @@ void motor_stop() {
   digitalWrite(PWM_PIN_L_B, LOW);
   digitalWrite(PWM_PIN_R_A, LOW);
   digitalWrite(PWM_PIN_R_B, LOW);
+}
+void re_phai_ngat_tu() {
+  motor_drive(200, -200);   // quay phải tại chỗ
+  delay(400);               // thời gian rẽ ~0.4s (chỉnh theo thực tế)
+  motor_drive(180, 180);    // chạy thẳng ra khỏi ngã tư
+  delay(300);
 }
