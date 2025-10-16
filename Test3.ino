@@ -17,20 +17,18 @@
 // --- THÔNG SỐ HIỆU CHỈNH ---
 // Robot chạy nền trắng - vạch đen
 
-const int TOC_DO_CO_BAN = 150;  // tốc độ cơ bản khi vào cua
+const int TOC_DO_CO_BAN = 150;  // tốc độ cơ bản khi vào cua gắt
 const int TOC_DO_MAX = 255;     // tốc độ tối đa trên đường thẳng
+const int TOC_DO_VUA = 200;     // tốc độ trung bình cho cua vừa
 
 // Hệ số PID
 const float Kp = 0.25;
 const float Ki = 0.001;
-const float Kd = 1.2;
+const float Kd = 1.0;
 
 // Giới hạn I (chống tràn tích phân)
 const int I_MAX = 400;
 const int I_MIN = -400;
-
-// Ngưỡng nhận biết đường cong
-const int NGUONG_VAO_CUA = 200;
 
 // =====================================================
 
@@ -40,6 +38,7 @@ uint16_t sensorValues[SensorCount];
 
 float P, I = 0, D, previousError = 0;
 int toc_do_trai, toc_do_phai;
+int toc_do_hien_tai = TOC_DO_CO_BAN;  // để làm mượt tốc độ
 
 // =====================================================
 void setup() {
@@ -87,24 +86,36 @@ void robot_control() {
 
   // Nếu không phải ngã tư -> chạy dò line như bình thường
   uint16_t position = qtr.readLineBlack(sensorValues);
-  float error = 1500.0 - position;
+  float error = 1500.0 - position;  // giữa 4 cảm biến (0-3000)
+
   PID_Linefollow(error);
 }
 
 // =====================================================
 void PID_Linefollow(float error) {
+  // --- PID ---
   P = error;
   I += error;
-  I = constrain(I, I_MIN, I_MAX);
+
+  if (I > I_MAX) I = I_MAX;
+  if (I < I_MIN) I = I_MIN;
+
   D = error - previousError;
   previousError = error;
 
   float PID_value = (Kp * P) + (Ki * I) + (Kd * D);
 
-  // --- Tốc độ động ---
-  float ratio = 1.0f - (fmin(fabs(error), 1500.0f) / 1500.0f);
-  int toc_do_hien_tai = TOC_DO_CO_BAN + (TOC_DO_MAX - TOC_DO_CO_BAN) * ratio;
+  // --- Tính tốc độ mục tiêu theo độ lệch ---
+  int toc_do_muc_tieu;
+  if (abs(error) < 300) toc_do_muc_tieu = TOC_DO_MAX;   // đường thẳng
+  else if (abs(error) < 800) toc_do_muc_tieu = TOC_DO_VUA; // cua vừa
+  else toc_do_muc_tieu = TOC_DO_CO_BAN;                 // cua gắt
 
+  // --- Làm mượt tốc độ (ramp up/down) ---
+  if (toc_do_hien_tai < toc_do_muc_tieu) toc_do_hien_tai += 2;
+  else if (toc_do_hien_tai > toc_do_muc_tieu) toc_do_hien_tai -= 2;
+
+  // --- Tính tốc độ từng bánh ---
   toc_do_trai = toc_do_hien_tai - PID_value;
   toc_do_phai = toc_do_hien_tai + PID_value;
 
@@ -112,6 +123,12 @@ void PID_Linefollow(float error) {
   toc_do_phai = constrain(toc_do_phai, -255, 255);
 
   motor_drive(toc_do_trai, toc_do_phai);
+
+  // Debug (bật nếu cần)
+  // Serial.print("Err: "); Serial.print(error);
+  // Serial.print("  L: "); Serial.print(toc_do_trai);
+  // Serial.print("  R: "); Serial.print(toc_do_phai);
+  // Serial.print("  T: "); Serial.println(toc_do_hien_tai);
 }
 
 // =====================================================
@@ -142,6 +159,8 @@ void motor_stop() {
   digitalWrite(PWM_PIN_R_A, LOW);
   digitalWrite(PWM_PIN_R_B, LOW);
 }
+
+// =====================================================
 void re_phai_ngat_tu() {
   motor_drive(200, -200);   // quay phải tại chỗ
   delay(400);               // thời gian rẽ ~0.4s (chỉnh theo thực tế)
