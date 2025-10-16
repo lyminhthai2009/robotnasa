@@ -1,144 +1,231 @@
 #include <QTRSensors.h>
+#include "BluetoothSerial.h"
 
-// --- CÁC CHÂN ĐIỀU KHIỂN ĐỘNG CƠ ---
-#define PWM_PIN_L_A 2  
-#define PWM_PIN_L_B 10 
-#define PWM_PIN_R_A 6  
-#define PWM_PIN_R_B 5  
+#if !defined(CONFIG_BT_ENABLED) || !defined(CONFIG_BLUEDROID_ENABLED)
+#error Bluetooth is not enabled! Please run `make menuconfig` to and enable it
+#endif
 
-// --- CÁC CHÂN CẢM BIẾN ---
-#define SENSOR_1_PIN 4 
-#define SENSOR_2_PIN 3 
-#define SENSOR_3_PIN 1 
-#define SENSOR_4_PIN 0 
+// =================================================================
+// == CẤU HÌNH PHẦN CỨNG CỦA BẠN ==
+// =================================================================
+#define PWM_PIN_L_A 2
+#define PWM_PIN_L_B 10
+#define PWM_PIN_R_A 6
+#define PWM_PIN_R_B 5
 
-// ===================================================================
-// === KHU VỰC TINH CHỈNH "PRO VIP" CHO CUỘC THI TỐC ĐỘ ===
-// ===================================================================
+// Kênh PWM cho ESP32
+#define left_motor_channel_a 0
+#define left_motor_channel_b 1
+#define right_motor_channel_a 2
+#define right_motor_channel_b 3
 
-// --- BƯỚC 1: TINH CHỈNH TỐC ĐỘ ---
-const int TOC_DO_CO_BAN = 220; // Tốc độ khi vào cua. Giữ ở mức vừa phải để cua an toàn.
-const int TOC_DO_MAX = 255;    // Tốc độ tối đa trên đường thẳng. ĐÂY LÀ TỐC ĐỘ BẠN MUỐN ĐẠT!
+// Cảm biến dò line
+#define SENSOR_1_PIN 4
+#define SENSOR_2_PIN 3
+#define SENSOR_3_PIN 1
+#define SENSOR_4_PIN 0
+const uint8_t SensorCount = 4; // Thay đổi từ 5 thành 4
 
-// --- BƯỚC 2: TINH CHỈNH LẠI PID CHO TỐC ĐỘ CAO ---
-// Bắt đầu với các giá trị gợi ý này và tinh chỉnh dần dần.
-const float Kp = 0.25;   // Tăng Kp để robot phản ứng nhanh hơn, bẻ lái gắt hơn.
-const float Ki = 0.001; // Giữ Ki rất nhỏ hoặc bằng 0 để tránh tích lũy sai số lớn ở tốc độ cao.
-const float Kd = 0.8;   // TĂNG MẠNH Kd. Đây là chìa khóa để giữ robot ổn định, chống rung lắc.
+// Đèn LED
+#define W_LED_ON 20
+#define IR_LED_ON 21
 
-// --- BƯỚC 3: NGƯỠNG PHÁT HIỆN ĐƯỜNG CONG ---
-// Nếu sai số (error) vượt quá ngưỡng này, robot sẽ hiểu là đang vào cua và giảm tốc.
-const int NGUONG_VAO_CUA = 200; 
-
-// Giới hạn cho thành phần I để chống "Integral Windup"
-const int I_MAX = 400;
-const int I_MIN = -400;
-
-// ===================================================================
+// =================================================================
+// == CÁC BIẾN TOÀN CỤC ==
+// =================================================================
 
 QTRSensors qtr;
-const uint8_t SensorCount = 4;
+BluetoothSerial SerialBT;
+
 uint16_t sensorValues[SensorCount];
 
-// Các biến cho thuật toán PID
-uint16_t position;
-float P, D, I = 0, previousError = 0;
-int toc_do_trai, toc_do_phai;
+// Biến cho PID
+float Kp = 0;
+float Ki = 0;
+float Kd = 0;
+uint8_t multiP = 1;
+uint8_t multiI = 1;
+uint8_t multiD = 1;
+float Pvalue;
+float Ivalue;
+float Dvalue;
 
-void setup() {
+boolean onoff = false; // Trạng thái bật/tắt của robot
+
+// Biến cho việc đọc Bluetooth
+int val, cnt = 0, v[3];
+
+// Biến cho việc tính toán PID
+uint16_t position;
+int P, D, I, previousError, error;
+int lsp, rsp; // Tốc độ trái và phải
+int lfspeed = 230; // Tốc độ cơ sở
+
+// Cấu hình PWM
+const int pwm_freq = 5000; // Tần số PWM
+const int pwm_resolution = 8; // Độ phân giải 8-bit (0-255)
+
+// =================================================================
+// == HÀM SETUP - CHẠY MỘT LẦN KHI KHỞI ĐỘNG ==
+// =================================================================
+void setup()
+{
   Serial.begin(115200);
   
-  pinMode(PWM_PIN_L_A, OUTPUT);
-  pinMode(PWM_PIN_L_B, OUTPUT);
-  pinMode(PWM_PIN_R_A, OUTPUT);
-  pinMode(PWM_PIN_R_B, OUTPUT);
+  // --- Cấu hình Motor PWM ---
+  ledcSetup(left_motor_channel_a, pwm_freq, pwm_resolution);
+  ledcSetup(left_motor_channel_b, pwm_freq, pwm_resolution);
+  ledcSetup(right_motor_channel_a, pwm_freq, pwm_resolution);
+  ledcSetup(right_motor_channel_b, pwm_freq, pwm_resolution);
 
-  pinMode(LED_BUILTIN, OUTPUT);
-  digitalWrite(LED_BUILTIN, HIGH); 
+  ledcAttachPin(PWM_PIN_L_A, left_motor_channel_a);
+  ledcAttachPin(PWM_PIN_L_B, left_motor_channel_b);
+  ledcAttachPin(PWM_PIN_R_A, right_motor_channel_a);
+  ledcAttachPin(PWM_PIN_R_B, right_motor_channel_b);
+  
+  // --- Cấu hình Đèn LED ---
+  pinMode(W_LED_ON, OUTPUT);
+  pinMode(IR_LED_ON, OUTPUT);
+  digitalWrite(IR_LED_ON, HIGH); // Bật đèn hồng ngoại cho cảm biến
 
-  qtr.setTypeAnalog();
+  // --- Cấu hình Cảm biến QTR ---
+  qtr.setTypeRC(); // Hoặc setTypeAnalog() nếu cảm biến của bạn là analog
   qtr.setSensorPins((const uint8_t[]){SENSOR_1_PIN, SENSOR_2_PIN, SENSOR_3_PIN, SENSOR_4_PIN}, SensorCount);
+  
   delay(500);
   
-  Serial.println("Bat dau Calibrate trong 5 giay...");
-  digitalWrite(LED_BUILTIN, LOW);
-  
-  for (uint16_t i = 0; i < 400; i++) {
+  // --- Hiệu chỉnh cảm biến (Calibration) ---
+  digitalWrite(W_LED_ON, HIGH); // Bật đèn trắng báo hiệu đang calibrate
+  for (uint16_t i = 0; i < 400; i++)
+  {
     qtr.calibrate();
   }
+  digitalWrite(W_LED_ON, LOW); // Tắt đèn trắng báo hiệu đã calibrate xong
+
+  Serial.println("Calibration finished. Values:");
+  for (uint8_t i = 0; i < SensorCount; i++)
+  {
+    Serial.print(qtr.calibrationOn.minimum[i]);
+    Serial.print(' ');
+  }
+  Serial.println();
+  for (uint8_t i = 0; i < SensorCount; i++)
+  {
+    Serial.print(qtr.calibrationOn.maximum[i]);
+    Serial.print(' ');
+  }
+  Serial.println();
   
-  digitalWrite(LED_BUILTIN, HIGH);
-  Serial.println("Calibrate hoan thanh! Robot se bat dau chay sau 2 giay.");
-  delay(2000);
+  // --- Khởi động Bluetooth ---
+  SerialBT.begin("LineFollowerRobot"); // Đặt tên cho Bluetooth
+  Serial.println("Bluetooth Started! Ready to pair...");
+
+  delay(1000);
 }
 
-void loop() {
-  robot_control();
+// =================================================================
+// == HÀM LOOP - CHẠY LIÊN TỤC ==
+// =================================================================
+void loop()
+{
+  if (SerialBT.available()){
+    valuesread();
+    processing();
+  }
+  
+  if (onoff == true){
+    robot_control();
+  }
+  else {
+    // Dừng động cơ nếu robot đang ở trạng thái OFF
+    motor_drive(0, 0);
+  }
 }
 
-void robot_control() {
+// =================================================================
+// == CÁC HÀM CHỨC NĂNG ==
+// =================================================================
+
+void robot_control(){
+  // Đọc giá trị từ cảm biến và tính toán vị trí của vạch đen
+  // Giá trị từ 0 đến 3000 (vì có 4 cảm biến, (4-1)*1000)
   position = qtr.readLineBlack(sensorValues);
-  float error = 1500.0 - position;
+  
+  // Lỗi = Giá trị trung tâm (1500) - Vị trí hiện tại
+  error = 1500 - position;
+
+  // Xử lý trường hợp robot chạy ra khỏi line
+  // Đoạn code này trong file gốc có thể gây kẹt vòng lặp, có thể bỏ đi
+  // và để PID tự xử lý. Nếu cần thiết có thể thêm lại logic tốt hơn.
+  
   PID_Linefollow(error);
 }
 
-// *** HÀM PID ĐÃ ĐƯỢC NÂNG CẤP LÊN PHIÊN BẢN "PRO VIP" ***
-void PID_Linefollow(float error) {
-  P = error;
-  I = I + error;
-  
-  // Chống "Integral Windup"
-  if (I > I_MAX) I = I_MAX;
-  if (I < I_MIN) I = I_MIN;
-  
-  D = error - previousError;
-  
-  float PID_value = (Kp * P) + (Ki * I) + (Kd * D);
-  
-  previousError = error;
+void PID_Linefollow(int error){
+    P = error;
+    I = I + error; // Tích lũy lỗi
+    D = error - previousError;
+    
+    Pvalue = (Kp / pow(10, multiP)) * P;
+    Ivalue = (Ki / pow(10, multiI)) * I;
+    Dvalue = (Kd / pow(10, multiD)) * D; 
 
-  // *** LOGIC ĐIỀU KHIỂN TỐC ĐỘ ĐỘNG ***
-  int toc_do_hien_tai;
-  if (abs(error) < NGUONG_VAO_CUA) {
-    // Sai số nhỏ -> Đang trên đường thẳng -> BUNG TỐC ĐỘ!
-    toc_do_hien_tai = TOC_DO_MAX;
-  } else {
-    // Sai số lớn -> Đang vào cua -> Giảm tốc để bám đường
-    toc_do_hien_tai = TOC_DO_CO_BAN;
-  }
+    float PIDvalue = Pvalue + Ivalue + Dvalue;
+    previousError = error;
 
-  // Điều chỉnh tốc độ 2 bánh xe dựa trên giá trị PID và tốc độ hiện tại
-  toc_do_trai = toc_do_hien_tai - PID_value;
-  toc_do_phai = toc_do_hien_tai + PID_value;
+    // Tính tốc độ cho mỗi bánh xe
+    lsp = lfspeed - PIDvalue;
+    rsp = lfspeed + PIDvalue;
 
-  // Giới hạn tốc độ trong khoảng cho phép
-  toc_do_trai = constrain(toc_do_trai, -255, 255);
-  toc_do_phai = constrain(toc_do_phai, -255, 255);
-
-  motor_drive(toc_do_trai, toc_do_phai);
+    // Giới hạn tốc độ trong khoảng -255 đến 255
+    lsp = constrain(lsp, -255, 255);
+    rsp = constrain(rsp, -255, 255);
+    
+    motor_drive(lsp, rsp);
 }
 
-void motor_drive(int leftSpeed, int rightSpeed) {
-  if (leftSpeed >= 0) {
-    analogWrite(PWM_PIN_L_A, leftSpeed);
-    digitalWrite(PWM_PIN_L_B, LOW);
-  } else {
-    digitalWrite(PWM_PIN_L_A, LOW);
-    analogWrite(PWM_PIN_L_B, -leftSpeed);
+// HÀM ĐIỀU KHIỂN ĐỘNG CƠ - ĐÃ VIẾT LẠI CHO PHẦN CỨNG CỦA BẠN
+void motor_drive(int left_speed, int right_speed){
+  // Điều khiển motor trái
+  if(left_speed > 0){ // Chạy tới
+    ledcWrite(left_motor_channel_a, left_speed);
+    ledcWrite(left_motor_channel_b, 0);
+  }
+  else { // Chạy lùi
+    ledcWrite(left_motor_channel_a, 0);
+    ledcWrite(left_motor_channel_b, abs(left_speed));
   }
   
-  if (rightSpeed >= 0) {
-    analogWrite(PWM_PIN_R_A, rightSpeed);
-    digitalWrite(PWM_PIN_R_B, LOW);
-  } else {
-    digitalWrite(PWM_PIN_R_A, LOW);
-    analogWrite(PWM_PIN_R_B, -rightSpeed);
+  // Điều khiển motor phải
+  if(right_speed > 0){ // Chạy tới
+    ledcWrite(right_motor_channel_a, right_speed);
+    ledcWrite(right_motor_channel_b, 0);
+  }
+  else { // Chạy lùi
+    ledcWrite(right_motor_channel_a, 0);
+    ledcWrite(right_motor_channel_b, abs(right_speed));
   }
 }
 
-void motor_stop() {
-  digitalWrite(PWM_PIN_L_A, LOW);
-  digitalWrite(PWM_PIN_L_B, LOW);
-  digitalWrite(PWM_PIN_R_A, LOW);
-  digitalWrite(PWM_PIN_R_B, LOW);
+// --- CÁC HÀM BLUETOOTH (Giữ nguyên từ code gốc) ---
+
+// Đọc 2 byte từ Bluetooth
+void valuesread() {
+  val = SerialBT.read();
+  cnt++;
+  v[cnt] = val;
+  if (cnt == 2)
+    cnt = 0;
+}
+
+// Xử lý lệnh nhận được
+void processing() {
+  int a = v[1];
+  if (a == 1) { Kp = v[2]; }
+  if (a == 2) { multiP = v[2]; }
+  if (a == 3) { Ki = v[2]; }
+  if (a == 4) { multiI = v[2]; }
+  if (a == 5) { Kd = v[2]; }
+  if (a == 6) { multiD = v[2]; }
+  if (a == 7) { onoff = v[2]; }
 }
