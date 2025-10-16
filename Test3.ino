@@ -95,20 +95,15 @@ void robot_control() {
 void PID_Linefollow(float error) {
   P = error;
   I += error;
-
-  // chống windup
-  if (I > I_MAX) I = I_MAX;
-  if (I < I_MIN) I = I_MIN;
-
+  I = constrain(I, I_MIN, I_MAX);
   D = error - previousError;
   previousError = error;
 
   float PID_value = (Kp * P) + (Ki * I) + (Kd * D);
 
-  // --- Điều chỉnh tốc độ theo mức sai số ---
-  int toc_do_hien_tai;
-  if (abs(error) < NGUONG_VAO_CUA) toc_do_hien_tai = TOC_DO_MAX;
-  else toc_do_hien_tai = TOC_DO_CO_BAN;
+  // --- Tốc độ động ---
+  float ratio = 1.0 - (min(abs(error), 1500) / 1500.0);
+  int toc_do_hien_tai = TOC_DO_CO_BAN + (TOC_DO_MAX - TOC_DO_CO_BAN) * ratio;
 
   toc_do_trai = toc_do_hien_tai - PID_value;
   toc_do_phai = toc_do_hien_tai + PID_value;
