@@ -1,4 +1,5 @@
 #include <QTRSensors.h>
+#include <driver/ledc.h> // Thư viện cho API PWM mới
 
 // =================================================================
 // == CẤU HÌNH PHẦN CỨNG CỦA BẠN ==
@@ -8,11 +9,8 @@
 #define PWM_PIN_R_A 6
 #define PWM_PIN_R_B 5
 
-// Kênh PWM cho ESP32
-#define left_motor_channel_a 0
-#define left_motor_channel_b 1
-#define right_motor_channel_a 2
-#define right_motor_channel_b 3
+// --- THAY ĐỔI: Không cần định nghĩa kênh (channel) nữa ---
+// Các kênh sẽ được quản lý tự động bởi các đối tượng LEDC
 
 // Cảm biến dò line
 #define SENSOR_1_PIN 4
@@ -33,7 +31,6 @@ QTRSensors qtr;
 uint16_t sensorValues[SensorCount];
 
 // ----- CÁC THÔNG SỐ PID - BẠN CẦN CHỈNH CÁC THÔNG SỐ NÀY -----
-// Bạn sẽ phải thay đổi các giá trị này và nạp lại code để tinh chỉnh robot.
 float Kp = 0.2;
 float Ki = 0;
 float Kd = 1.0;
@@ -47,11 +44,18 @@ float Dvalue;
 uint16_t position;
 int P, D, I = 0, previousError = 0, error;
 int lsp, rsp; // Tốc độ trái và phải
-int lfspeed = 180; // Tốc độ cơ sở, bắt đầu với giá trị thấp (vd: 150-180)
+int lfspeed = 180; // Tốc độ cơ sở
 
 // Cấu hình PWM
-const int pwm_freq = 5000; // Tần số PWM
+const int pwm_freq = 5000;
 const int pwm_resolution = 8; // Độ phân giải 8-bit (0-255)
+
+// --- THAY ĐỔI: Tạo các đối tượng LEDC cho mỗi chân PWM ---
+// Đây là cách làm mới, thay thế cho ledcSetup và ledcAttachPin
+ledc::LEDC motor_l_a(PWM_PIN_L_A);
+ledc::LEDC motor_l_b(PWM_PIN_L_B);
+ledc::LEDC motor_r_a(PWM_PIN_R_A);
+ledc::LEDC motor_r_b(PWM_PIN_R_B);
 
 // =================================================================
 // == HÀM SETUP - CHẠY MỘT LẦN KHI KHỞI ĐỘNG ==
@@ -60,16 +64,12 @@ void setup()
 {
   Serial.begin(115200);
   
-  // --- Cấu hình Motor PWM ---
-  ledcSetup(left_motor_channel_a, pwm_freq, pwm_resolution);
-  ledcSetup(left_motor_channel_b, pwm_freq, pwm_resolution);
-  ledcSetup(right_motor_channel_a, pwm_freq, pwm_resolution);
-  ledcSetup(right_motor_channel_b, pwm_freq, pwm_resolution);
-
-  ledcAttachPin(PWM_PIN_L_A, left_motor_channel_a);
-  ledcAttachPin(PWM_PIN_L_B, left_motor_channel_b);
-  ledcAttachPin(PWM_PIN_R_A, right_motor_channel_a);
-  ledcAttachPin(PWM_PIN_R_B, right_motor_channel_b);
+  // --- THAY ĐỔI: Cấu hình Motor PWM bằng API mới ---
+  // Gọi phương thức .setup() cho mỗi đối tượng motor
+  motor_l_a.setup(pwm_freq, pwm_resolution);
+  motor_l_b.setup(pwm_freq, pwm_resolution);
+  motor_r_a.setup(pwm_freq, pwm_resolution);
+  motor_r_b.setup(pwm_freq, pwm_resolution);
   
   // --- Cấu hình Đèn LED ---
   pinMode(W_LED_ON, OUTPUT);
@@ -77,19 +77,19 @@ void setup()
   digitalWrite(IR_LED_ON, HIGH); // Bật đèn hồng ngoại cho cảm biến
 
   // --- Cấu hình Cảm biến QTR ---
-  qtr.setTypeRC(); // Hoặc setTypeAnalog() nếu cảm biến của bạn là analog
+  qtr.setTypeRC();
   qtr.setSensorPins((const uint8_t[]){SENSOR_1_PIN, SENSOR_2_PIN, SENSOR_3_PIN, SENSOR_4_PIN}, SensorCount);
   
   delay(500);
   
   // --- Hiệu chỉnh cảm biến (Calibration) ---
   Serial.println("Bat dau Calibration...");
-  digitalWrite(W_LED_ON, HIGH); // Bật đèn trắng báo hiệu đang calibrate
+  digitalWrite(W_LED_ON, HIGH);
   for (uint16_t i = 0; i < 400; i++)
   {
     qtr.calibrate();
   }
-  digitalWrite(W_LED_ON, LOW); // Tắt đèn trắng báo hiệu đã calibrate xong
+  digitalWrite(W_LED_ON, LOW);
 
   Serial.println("Calibration da xong. Robot se bat dau chay.");
   
@@ -101,7 +101,6 @@ void setup()
 // =================================================================
 void loop()
 {
-  // Robot sẽ luôn chạy sau khi setup xong
   robot_control();
 }
 
@@ -110,22 +109,16 @@ void loop()
 // =================================================================
 
 void robot_control(){
-  // Đọc giá trị từ cảm biến và tính toán vị trí của vạch đen
-  // Giá trị từ 0 đến 3000 (vì có 4 cảm biến, (4-1)*1000)
   position = qtr.readLineBlack(sensorValues);
-  
-  // Lỗi = Giá trị trung tâm (1500) - Vị trí hiện tại
   error = 1500 - position;
-  
   PID_Linefollow(error);
 }
 
 void PID_Linefollow(int error){
     P = error;
-    I = I + error; // Tích lũy lỗi
+    I = I + error;
     D = error - previousError;
     
-    // Ở đây ta không cần `multiP` nữa, dùng trực tiếp Kp, Ki, Kd
     Pvalue = Kp * P;
     Ivalue = Ki * I;
     Dvalue = Kd * D; 
@@ -133,11 +126,9 @@ void PID_Linefollow(int error){
     float PIDvalue = Pvalue + Ivalue + Dvalue;
     previousError = error;
 
-    // Tính tốc độ cho mỗi bánh xe
     lsp = lfspeed - PIDvalue;
     rsp = lfspeed + PIDvalue;
 
-    // Giới hạn tốc độ trong khoảng -255 đến 255
     lsp = constrain(lsp, -255, 255);
     rsp = constrain(rsp, -255, 255);
     
@@ -148,21 +139,21 @@ void PID_Linefollow(int error){
 void motor_drive(int left_speed, int right_speed){
   // Điều khiển motor trái
   if(left_speed > 0){ // Chạy tới
-    ledcWrite(left_motor_channel_a, left_speed);
-    ledcWrite(left_motor_channel_b, 0);
+    motor_l_a.write(left_speed); // THAY ĐỔI: Dùng object.write()
+    motor_l_b.write(0);
   }
   else { // Chạy lùi
-    ledcWrite(left_motor_channel_a, 0);
-    ledcWrite(left_motor_channel_b, abs(left_speed));
+    motor_l_a.write(0);
+    motor_l_b.write(abs(left_speed));
   }
   
   // Điều khiển motor phải
   if(right_speed > 0){ // Chạy tới
-    ledcWrite(right_motor_channel_a, right_speed);
-    ledcWrite(right_motor_channel_b, 0);
+    motor_r_a.write(right_speed); // THAY ĐỔI: Dùng object.write()
+    motor_r_b.write(0);
   }
   else { // Chạy lùi
-    ledcWrite(right_motor_channel_a, 0);
-    ledcWrite(right_motor_channel_b, abs(right_speed));
+    motor_r_a.write(0);
+    motor_r_b.write(abs(right_speed));
   }
 }
