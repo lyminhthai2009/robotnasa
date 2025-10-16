@@ -1,9 +1,4 @@
 #include <QTRSensors.h>
-#include "BluetoothSerial.h"
-
-#if !defined(CONFIG_BT_ENABLED) || !defined(CONFIG_BLUEDROID_ENABLED)
-#error Bluetooth is not enabled! Please run `make menuconfig` to and enable it
-#endif
 
 // =================================================================
 // == CẤU HÌNH PHẦN CỨNG CỦA BẠN ==
@@ -24,7 +19,7 @@
 #define SENSOR_2_PIN 3
 #define SENSOR_3_PIN 1
 #define SENSOR_4_PIN 0
-const uint8_t SensorCount = 4; // Thay đổi từ 5 thành 4
+const uint8_t SensorCount = 4;
 
 // Đèn LED
 #define W_LED_ON 20
@@ -35,31 +30,24 @@ const uint8_t SensorCount = 4; // Thay đổi từ 5 thành 4
 // =================================================================
 
 QTRSensors qtr;
-BluetoothSerial SerialBT;
-
 uint16_t sensorValues[SensorCount];
 
-// Biến cho PID
-float Kp = 0;
+// ----- CÁC THÔNG SỐ PID - BẠN CẦN CHỈNH CÁC THÔNG SỐ NÀY -----
+// Bạn sẽ phải thay đổi các giá trị này và nạp lại code để tinh chỉnh robot.
+float Kp = 0.2;
 float Ki = 0;
-float Kd = 0;
-uint8_t multiP = 1;
-uint8_t multiI = 1;
-uint8_t multiD = 1;
+float Kd = 1.0;
+// -----------------------------------------------------------
+
 float Pvalue;
 float Ivalue;
 float Dvalue;
 
-boolean onoff = false; // Trạng thái bật/tắt của robot
-
-// Biến cho việc đọc Bluetooth
-int val, cnt = 0, v[3];
-
 // Biến cho việc tính toán PID
 uint16_t position;
-int P, D, I, previousError, error;
+int P, D, I = 0, previousError = 0, error;
 int lsp, rsp; // Tốc độ trái và phải
-int lfspeed = 230; // Tốc độ cơ sở
+int lfspeed = 180; // Tốc độ cơ sở, bắt đầu với giá trị thấp (vd: 150-180)
 
 // Cấu hình PWM
 const int pwm_freq = 5000; // Tần số PWM
@@ -95,6 +83,7 @@ void setup()
   delay(500);
   
   // --- Hiệu chỉnh cảm biến (Calibration) ---
+  Serial.println("Bat dau Calibration...");
   digitalWrite(W_LED_ON, HIGH); // Bật đèn trắng báo hiệu đang calibrate
   for (uint16_t i = 0; i < 400; i++)
   {
@@ -102,24 +91,8 @@ void setup()
   }
   digitalWrite(W_LED_ON, LOW); // Tắt đèn trắng báo hiệu đã calibrate xong
 
-  Serial.println("Calibration finished. Values:");
-  for (uint8_t i = 0; i < SensorCount; i++)
-  {
-    Serial.print(qtr.calibrationOn.minimum[i]);
-    Serial.print(' ');
-  }
-  Serial.println();
-  for (uint8_t i = 0; i < SensorCount; i++)
-  {
-    Serial.print(qtr.calibrationOn.maximum[i]);
-    Serial.print(' ');
-  }
-  Serial.println();
+  Serial.println("Calibration da xong. Robot se bat dau chay.");
   
-  // --- Khởi động Bluetooth ---
-  SerialBT.begin("LineFollowerRobot"); // Đặt tên cho Bluetooth
-  Serial.println("Bluetooth Started! Ready to pair...");
-
   delay(1000);
 }
 
@@ -128,18 +101,8 @@ void setup()
 // =================================================================
 void loop()
 {
-  if (SerialBT.available()){
-    valuesread();
-    processing();
-  }
-  
-  if (onoff == true){
-    robot_control();
-  }
-  else {
-    // Dừng động cơ nếu robot đang ở trạng thái OFF
-    motor_drive(0, 0);
-  }
+  // Robot sẽ luôn chạy sau khi setup xong
+  robot_control();
 }
 
 // =================================================================
@@ -153,10 +116,6 @@ void robot_control(){
   
   // Lỗi = Giá trị trung tâm (1500) - Vị trí hiện tại
   error = 1500 - position;
-
-  // Xử lý trường hợp robot chạy ra khỏi line
-  // Đoạn code này trong file gốc có thể gây kẹt vòng lặp, có thể bỏ đi
-  // và để PID tự xử lý. Nếu cần thiết có thể thêm lại logic tốt hơn.
   
   PID_Linefollow(error);
 }
@@ -166,9 +125,10 @@ void PID_Linefollow(int error){
     I = I + error; // Tích lũy lỗi
     D = error - previousError;
     
-    Pvalue = (Kp / pow(10, multiP)) * P;
-    Ivalue = (Ki / pow(10, multiI)) * I;
-    Dvalue = (Kd / pow(10, multiD)) * D; 
+    // Ở đây ta không cần `multiP` nữa, dùng trực tiếp Kp, Ki, Kd
+    Pvalue = Kp * P;
+    Ivalue = Ki * I;
+    Dvalue = Kd * D; 
 
     float PIDvalue = Pvalue + Ivalue + Dvalue;
     previousError = error;
@@ -184,7 +144,7 @@ void PID_Linefollow(int error){
     motor_drive(lsp, rsp);
 }
 
-// HÀM ĐIỀU KHIỂN ĐỘNG CƠ - ĐÃ VIẾT LẠI CHO PHẦN CỨNG CỦA BẠN
+// HÀM ĐIỀU KHIỂN ĐỘNG CƠ
 void motor_drive(int left_speed, int right_speed){
   // Điều khiển motor trái
   if(left_speed > 0){ // Chạy tới
@@ -205,27 +165,4 @@ void motor_drive(int left_speed, int right_speed){
     ledcWrite(right_motor_channel_a, 0);
     ledcWrite(right_motor_channel_b, abs(right_speed));
   }
-}
-
-// --- CÁC HÀM BLUETOOTH (Giữ nguyên từ code gốc) ---
-
-// Đọc 2 byte từ Bluetooth
-void valuesread() {
-  val = SerialBT.read();
-  cnt++;
-  v[cnt] = val;
-  if (cnt == 2)
-    cnt = 0;
-}
-
-// Xử lý lệnh nhận được
-void processing() {
-  int a = v[1];
-  if (a == 1) { Kp = v[2]; }
-  if (a == 2) { multiP = v[2]; }
-  if (a == 3) { Ki = v[2]; }
-  if (a == 4) { multiI = v[2]; }
-  if (a == 5) { Kd = v[2]; }
-  if (a == 6) { multiD = v[2]; }
-  if (a == 7) { onoff = v[2]; }
 }
